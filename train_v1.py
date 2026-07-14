@@ -132,7 +132,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
             ssim_value = ssim(image, gt_image)
-        perceptual_loss = vgg_loss(image, gt_image)
+        perceptual_loss = vgg_loss(image.unsqueeze(0), gt_image.unsqueeze(0))
         loss = 0.7 * recon_loss + 0.25 * (1.0 - ssim_value) + 0.05 * perceptual_loss
 
         # Depth regularization
