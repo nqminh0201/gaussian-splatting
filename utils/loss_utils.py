@@ -10,7 +10,9 @@
 #
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+import torchvision.models as models
 from torch.autograd import Variable
 from math import exp
 try:
@@ -42,6 +44,9 @@ def l1_loss(network_output, gt):
 
 def l2_loss(network_output, gt):
     return ((network_output - gt) ** 2).mean()
+
+def chanbonier_loss(network_output, gt, eps=1e-3):
+    return torch.mean(torch.sqrt((network_output - gt) ** 2 + eps ** 2))
 
 def gaussian(window_size, sigma):
     gauss = torch.Tensor([exp(-(x - window_size // 2) ** 2 / float(2 * sigma ** 2)) for x in range(window_size)])
@@ -89,3 +94,82 @@ def _ssim(img1, img2, window, window_size, channel, size_average=True):
 def fast_ssim(img1, img2):
     ssim_map = FusedSSIMMap.apply(C1, C2, img1, img2)
     return ssim_map.mean()
+
+class VGGPerceptualLoss(nn.Module):
+    """
+    VGG16 Perceptual Loss
+
+    Args:
+        layer_ids: VGG feature layer indices.
+        weights: Weight for each selected layer.
+        criterion: "l1" or "l2".
+        resize: Whether to resize inputs before feeding into VGG.
+        resize_size: Target spatial size.
+    """
+    def __init__(
+        self,
+        layer_ids=(3, 8, 15, 22),
+        weights=(1.0, 1.0, 1.0, 1.0),
+        criterion="l1",
+        resize=True,
+        resize_size=(224, 224),
+    ):
+        super().__init__()
+        vgg = models.vgg16(weights=models.VGG16_Weights.IMAGENET1K_V1).features
+        self.vgg = vgg.eval()
+        for p in self.vgg.parameters():
+            p.requires_grad = False
+        self.layer_ids = set(layer_ids)
+        self.weights = weights
+        self.resize = resize
+        self.resize_size = resize_size
+        if criterion == "l1":
+            self.criterion = nn.L1Loss()
+        elif criterion == "l2":
+            self.criterion = nn.MSELoss()
+        else:
+            raise ValueError("criterion must be 'l1' or 'l2'")
+        self.register_buffer(
+            "mean",
+            torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1),
+        )
+        self.register_buffer(
+            "std",
+            torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1),
+        )
+
+    def normalize(self, x):
+        return (x - self.mean) / self.std
+
+    def forward(self, pred, target):
+        """
+        Args:
+            pred:   (B, 3, H, W), values in [0, 1]
+            target: (B, 3, H, W), values in [0, 1]
+        """
+        if self.resize:
+            pred = F.interpolate(
+                pred,
+                size=self.resize_size,
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
+            )
+            target = F.interpolate(
+                target,
+                size=self.resize_size,
+                mode="bilinear",
+                align_corners=False,
+                antialias=True,
+            )
+        pred = self.normalize(pred)
+        target = self.normalize(target)
+        loss = 0.0
+        weight_idx = 0
+        for i, layer in enumerate(self.vgg):
+            pred = layer(pred)
+            target = layer(target)
+            if i in self.layer_ids:
+                loss += self.weights[weight_idx] * self.criterion(pred, target)
+                weight_idx += 1
+        return loss
